@@ -1,15 +1,18 @@
 from datetime import date
 
-from binomialTreeV3 import (
+from Bin_Tri_treeV1 import (
     Market,
     Option,
     Model,
     BinomialTree,
+    TrinomialTree
 )
 
-from GraphiqueBinomial import Graphique
 
-from TestUnitaireBinomialTree import TestBinomialTree
+from Graphique_arbre import (
+    BinomialGraphique,
+    TrinomialGraphique
+)
 
 
 if __name__ == "__main__":
@@ -54,8 +57,18 @@ if __name__ == "__main__":
         exercise="EU"
     )
 
-    # Création de l'arbre
-    tree = BinomialTree(
+    # Création de l'arbre binomial
+    bi_tree = BinomialTree(
+        market,
+        option,
+        Model(
+            pricing_date,
+            5
+        )
+    )
+
+    # Création de l'arbre trinomial
+    tri_tree = TrinomialTree(
         market,
         option,
         Model(
@@ -65,15 +78,21 @@ if __name__ == "__main__":
     )
 
     # Calcul du prix
-    price = tree.price()
+    bi_price = bi_tree.price()
+    tri_price = tri_tree.price()
 
-    print("Prix de l'option :", price)
+    print("Prix de l'option (arbre binomial):", bi_price)
+    print("Prix de l'option (arbre trinomial):", tri_price)
 
     # Création de l'objet Graphique
-    graphique = Graphique(tree)
+    bi_graphique = BinomialGraphique(bi_tree)
+    tri_graphique = TrinomialGraphique(tri_tree)
 
     # Graphique de convergence
-    graphique.convergence_black_scholes()
+    bi_graphique.convergence_black_scholes()
+    tri_graphique.convergence_black_scholes()
 
     # Représentation de l'arbre
-    graphique.to_svg("mon_arbre.svg")
+    bi_graphique.to_svg("arbre binomial.svg")
+    tri_graphique.to_svg("arbre trinomial.svg")
+    
