@@ -1,6 +1,6 @@
 from datetime import date
 
-from Bin_Tri_treeV2 import (
+from Bin_Tri_treeV3 import (
     Market,
     Option,
     Model,
@@ -92,9 +92,10 @@ if __name__ == "__main__":
     bi_graphique = BinomialGraphique(bi_tree)
     tri_graphique = TrinomialGraphique(tri_tree)
 
-    # Graphique de convergence
-    bi_graphique.convergence_black_scholes()
-    tri_graphique.convergence_black_scholes()
+    # # Graphique de convergence
+    #on peut plus comparer avc black scholes quand on a un dividende discret
+    # bi_graphique.convergence_black_scholes()
+    # tri_graphique.convergence_black_scholes()
 
     # Représentation de l'arbre
     bi_graphique.to_svg("arbre binomial.svg")
