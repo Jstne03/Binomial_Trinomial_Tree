@@ -10,10 +10,10 @@ from Bin_Tri_treeV4 import (
     price_and_greeks,
 )
 
-def world():
+def pricer():
     wb: xw.Book = xw.Book.caller()
-    top: xw.Range = wb.sheets['Main'].range('TopCell')
     
+    ##-------INPUT
     #Market
     St : xw.Range = wb.sheets['Main'].range('Stock_price')
     r : xw.Range = wb.sheets['Main'].range('Interest_rate')
@@ -27,7 +27,7 @@ def world():
     
     #Tree
     prune_threshold : xw.Range = wb.sheets['Main'].range('Pruning')
-    maturity : xw.Range = wb.sheets['Main'].range('Nb_nodes')
+    maturity_date : xw.Range = wb.sheets['Main'].range('Nb_nodes')
     smoothing : xw.Range = wb.sheets['Main'].range('Limites')
     grecques : xw.Range = wb.sheets['Main'].range('Grecques')
     
@@ -37,27 +37,43 @@ def world():
     Exercise : xw.Range = wb.sheets['Main'].range('Exercise')
     K : xw.Range = wb.sheets['Main'].range('Strike')
     
+    ##-------OUTPUT
+    bs_price : xw.Range = wb.sheets['Main'].range('BS_price')
+    bin_price : xw.Range = wb.sheets['Main'].range('Bin_tree_price')
+    trin_price : xw.Range = wb.sheets['Main'].range('Trin_Tree_price')
     
-    BS_price : xw.Range = wb.sheets['Main'].range('BS_price')
-    Tree_price : xw.Range = wb.sheets['Main'].range('Tree_price')
+    bs_grecques : xw.Range = wb.sheets['Main'].range('BS_grecques')
+    bin_tree_grecques : xw.Range = wb.sheets['Main'].range('Bin_tree_grecques')
+    trin_tree_grecques : xw.Range = wb.sheets['Main'].range('Trin_tree_grecques')
     
+    ##--------COMPUTATION
     market = Market(s0=St, r=r, vol=sigma, q_ex_div_date=ex_dividend_date, q_amount=q_amount)
     option = Option(strike=K, t=maturity_date, CP=CP, exercise=Exercise)
     model = Model(pricing_date, nb_step)
     
     #trinomial Tree
-    tri_tree = TrinomialTree(market, option, model, prune_threshold=prune_threshold)
+    tri_tree = TrinomialTree(market, option, model, greek_nodes= grecques, prune_threshold=prune_threshold, smoothing=smoothing)
     tri_price = tri_tree.price()
+    #rajouter les grecques 
     
-    #
-    firstRow: int = 0
-    # look for the first empty cell in A column
-    while len(str(top.offset(firstRow, 0).value)) > 5:
-        firstRow += 1
-    # Fill the cell with some calculations
-    BS_price.value = 2
-    Tree_price = 2
-    top.offset(firstRow, 0).value = factorial(firstRow)
+    #binomial Tree
+    #check before calling it if there's a dividend bc we can't do it if there is one so return None
+    #rajouter les grecques 
+    
+    #Black&Scholes
+    #rajouter les grecques
+    
+    #output in the excel file
+    #d'abord les prix
+    bs_price.value = 2
+    trin_price.value = tri_price
+    bin_price.value = 2
+    
+    #ensuite les grecques (attention ce sont des places de valeurs !)
+    bs_grecques.value = 0
+    bin_tree_grecques.value = 0 
+    trin_tree_grecques.value = 0
+    
 
 
 @xw.func
