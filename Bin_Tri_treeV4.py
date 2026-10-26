@@ -1,7 +1,7 @@
 from __future__ import annotations
 import math
 import time
-from datetime import date
+from datetime import date, timedelta
 import numpy as np
 
 
@@ -61,6 +61,9 @@ class BiNode:
         self.below: BiNode | None = None
         # valeur de l'option en ce nœud (remplie pendant le backward)
         self.value = 0.0
+
+        # probabilité d'atteindre ce nœud depuis la racine (sert au pruning)
+        self.proba = 0.0
         
     def forward(self):
         #retourne le prix du forward un pas plus loin
@@ -208,8 +211,12 @@ def _count_nodes(last_trunk):
 #Arbre
 
 class BinomialTree:
-    def __init__(self, market, option, model, greek_nodes=False, smoothing=False):
+    def __init__(self, market, option, model, greek_nodes=False, smoothing=False, prune_threshold=None):
         self.smoothing = smoothing
+        # prune_threshold : on coupe les nœuds dont la probabilité d'atteinte est < seuil
+        # (ex. 1e-7) : ils n'ont alors qu'un seul fils avec probabilité 1 (celui qui les ramène
+        # vers le centre de l'arbre, il n'y a pas de fils du milieu en binomial). None = pas de pruning.
+        self.prune_threshold = prune_threshold or 0.0
         self.market = market
         self.option = option
         self.model = model
@@ -220,6 +227,7 @@ class BinomialTree:
         self.u = 1 / (1 + self.sqrt_alpha)
         self.d = 1 - self.u
         self.root = TrunkBiNode(self, market.s0, prec_trunk=None, column=0)
+        self.root.proba = 1.0
         self.last_trunk: TrunkBiNode | None = None
         if greek_nodes:
             _add_greek_nodes(self, self.root, BiNode, self.sqrt_alpha ** 2)
@@ -246,42 +254,61 @@ class BinomialTree:
         Renvoie le tronc de la colonne i+1.
         Tronc : colonne paire -> nœud du milieu ; colonne impaire -> juste au-dessus.
         Donc le tronc alterne : up, down, up, down...
+        Le nœud d'indice k (en partant du bas) de la colonne i a pour fils down l'indice k
+        et pour fils up l'indice k+1 de la colonne i+1 (recombinaison).
+        Pruning : un nœud élagué n'a qu'un fils, avec probabilité 1 : le fils down s'il est
+        au-dessus des nœuds vivants, le fils up s'il est en dessous (donc vers le centre).
         """
-        bottom = trunk.lowest()
-        # nœud le plus bas de la nouvelle colonne
-        new_bottom = BiNode(self, bottom.down_price())
-        bottom.next_down = new_bottom
-        new_trunk = None
-        node = bottom # on remonte la colonne i du bas vers le haut
-        below_new = new_bottom # dernier nœud créé dans la colonne i+1
+        nodes = []
+        node = trunk.lowest()
         while node is not None:
-            # le fils "up" de ce nœud est-il le prochain nœud du tronc ?
-            if i % 2 == 0:
-                is_trunk_child = node is trunk
-            else:
-                is_trunk_child = node.above is trunk
-                    
-            price = node.up_price()
-            if is_trunk_child:
-                new_up = TrunkBiNode(self, price, prec_trunk=trunk, column=i + 1)
-                new_trunk = new_up
-            else:
-                new_up = BiNode(self, price)
-                    
-            node.next_up = new_up
-                
-            # liens dans la nouvelle colonne
-            new_up.below = below_new
-            below_new.above = new_up
-            # recombinaison : le nœud du dessus descend vers ce même nœud
-            if node.above is not None:
-                node.above.next_down = new_up
-                    
-            below_new = new_up
+            nodes.append(node)
             node = node.above
+        alive = [n.proba >= self.prune_threshold for n in nodes]
+        lo = alive.index(True)
+        hi = len(alive) - 1 - alive[::-1].index(True)
+        top = len(nodes) - 1
+
+        # indices de la colonne i+1 réellement nécessaires
+        mn = 1 if lo > 0 else 0
+        mx = max(hi + 1, top)
+
+        # indice du tronc dans la colonne i, puis son fils dans la colonne i+1
+        ti = next(k for k, n in enumerate(nodes) if n is trunk)
+        if not alive[ti]:
+            raise ValueError("Seuil de pruning trop élevé : le tronc est élagué")
+        new_ti = ti + 1 if i % 2 == 0 else ti
+
+        # création de la colonne i+1 (du bas vers le haut)
+        new_nodes = []
+        new_trunk = None
+        for j in range(mn, mx + 1):
+            price = nodes[j - 1].up_price() if j >= 1 else nodes[0].down_price()
+            if j == new_ti:
+                new_node = TrunkBiNode(self, price, prec_trunk=trunk, column=i + 1)
+                new_trunk = new_node
+            else:
+                new_node = BiNode(self, price)
+            if new_nodes:
+                new_node.below = new_nodes[-1]
+                new_nodes[-1].above = new_node
+            new_nodes.append(new_node)
+
+        # liens parent -> fils et probabilités d'atteinte
+        for k, node in enumerate(nodes):
+            if lo <= k <= hi:
+                node.next_down = new_nodes[k - mn]
+                node.next_up = new_nodes[k + 1 - mn]
+                node.next_up.proba += self.u * node.proba
+                node.next_down.proba += self.d * node.proba
+            else:
+                # nœud élagué : un seul fils, probabilité 1
+                child = new_nodes[k - mn] if k > hi else new_nodes[k + 1 - mn]
+                node.next_up = node.next_down = child
+                child.proba += node.proba
         return new_trunk
-    
-        
+
+
     # ---------- pricing (backward) ----------
     def price(self):
         """Construit l'arbre puis calcule le prix de l'option en remontant."""
@@ -314,12 +341,13 @@ class BinomialTree:
         return self.root.value
     
     
-def price_binomial_tree(market, option, pricing_date, nb_step):
+def price_binomial_tree(market, option, pricing_date, nb_step, prune_threshold=None, smoothing=False):
     model = Model(pricing_date, nb_step)
-    return BinomialTree(market, option, model).price()
+    return BinomialTree(market, option, model, prune_threshold=prune_threshold,
+                        smoothing=smoothing).price()
     
 class TrinomialTree:
-    def __init__(self, market, option, model, greek_nodes=False, prune_threshold=None, smoothing=False):
+    def __init__(self, market, option, model, greek_nodes=False, smoothing=False, prune_threshold=None):
         self.smoothing = smoothing
         # prune_threshold : on coupe les nœuds dont la probabilité d'atteinte est < seuil
         # (ex. 1e-7) : ils n'ont alors qu'un fils (le milieu) avec probabilité 1. None = pas de pruning.
@@ -384,7 +412,11 @@ class TrinomialTree:
 
     def calculate_column_div(self):
          # renvoie le numéro de colonne qui est impactée par le versement du div
-         col = math.ceil((self.market.q_ex_div_date - self.model.pricing_date).days / 365 / self.deltaT)
+         # calcul en entiers : le ceil sur des flottants décalait la colonne quand la date de
+         # détachement tombe exactement sur une date de l'arbre
+         days_total = (self.option.t - self.model.pricing_date).days
+         days_div = (self.market.q_ex_div_date - self.model.pricing_date).days
+         col = -((-days_div * self.model.nb_step) // days_total)
          if col < 1 or col > self.model.nb_step:
              return None          # dividende hors de la vie de l'option
          return col
@@ -549,9 +581,10 @@ class TrinomialTree:
         return self.root.value
     
     
-def price_trinomial_tree(market, option, pricing_date, nb_step, prune_threshold=None):
+def price_trinomial_tree(market, option, pricing_date, nb_step, prune_threshold=None, smoothing=False):
     model = Model(pricing_date, nb_step)
-    return TrinomialTree(market, option, model, prune_threshold=prune_threshold).price()
+    return TrinomialTree(market, option, model, prune_threshold=prune_threshold,
+                         smoothing=smoothing).price()
 
 
 def price_and_greeks(market, option, pricing_date, nb_step, tree_type="tri",
@@ -560,17 +593,17 @@ def price_and_greeks(market, option, pricing_date, nb_step, tree_type="tri",
     Prix + grecques à partir de l'arbre.
       - delta, gamma : lus sur 3 nœuds autour de la racine (un seul pricing).
       - vega, vomma  : différences finies sur la volatilité (pas d'astuce d'arbre pour eux, slide 17).
-    tree_type : "tri" ou "bin". Le pruning ne concerne que le trinomial.
+    tree_type : "tri" ou "bin".
     smoothing  : lisse la dernière colonne avec Black-Scholes -> supprime les oscillations de l'arbre
                  (utile surtout pour vega/vomma, qui sont des dérivées secondes bruitées sinon).
     """
     if tree_type == "tri":
-        make = lambda m, g: TrinomialTree(m, option, Model(pricing_date, nb_step),
+        make = lambda m, g, d=pricing_date: TrinomialTree(m, option, Model(d, nb_step),
                                           greek_nodes=g, prune_threshold=prune_threshold,
                                           smoothing=smoothing)
     elif tree_type == "bin":
-        make = lambda m, g: BinomialTree(m, option, Model(pricing_date, nb_step), greek_nodes=g,
-                                     smoothing=smoothing)
+        make = lambda m, g, d=pricing_date: BinomialTree(m, option, Model(d, nb_step), greek_nodes=g,
+                                     prune_threshold=prune_threshold, smoothing=smoothing)
     else:
         raise ValueError("tree_type doit valoir 'tri' ou 'bin'")
 
@@ -579,15 +612,28 @@ def price_and_greeks(market, option, pricing_date, nb_step, tree_type="tri",
     delta, gamma = tree.delta_gamma()
 
     def price_at_vol(vol):
+        # prix et delta (lu sur les nœuds autour de la racine) pour une autre volatilité
         m = Market(market.s0, market.r, vol, market.q_ex_div_date, market.q_amount)
-        return make(m, False).price()
+        t = make(m, True)
+        return t.price(), t.delta_gamma()[0]
 
     h = vol_shift
-    p_up, p_mid, p_dn = price_at_vol(market.vol + h), price_at_vol(market.vol), price_at_vol(market.vol - h)
+    (p_up, d_up), (p_mid, _), (p_dn, d_dn) = (price_at_vol(market.vol + h), price_at_vol(market.vol),
+                                              price_at_vol(market.vol - h))
     vega = (p_up - p_dn) / (2 * h)
     vomma = (p_up - 2 * p_mid + p_dn) / h ** 2
-    vanna = 0
-    theta = 0
+    vanna = (d_up - d_dn) / (2 * h)       # vanna = d(delta)/d(vol), différence finie centrée
+
+    # theta : différence finie sur la date de pricing (1 jour), exprimé par an
+    day = timedelta(days=1)
+    ex = market.q_ex_div_date
+    if (option.t - pricing_date).days <= 1:
+        theta = None                      # moins d'un jour restant : n/a
+    elif market.q_amount and ex is not None and pricing_date < ex <= pricing_date + day:
+        # avancer d'un jour ferait sauter le dividende : on recule d'un jour à la place
+        theta = (price - make(market, False, pricing_date - day).price()) * 365
+    else:
+        theta = (make(market, False, pricing_date + day).price() - price) * 365
     return {"delta": delta, "gamma": gamma, "vega": vega, "vomma": vomma,"vanna": vanna, "theta": theta}
     
 
@@ -635,6 +681,3 @@ class BlackScholes():
             theta = decay + r * K * math.exp(-r * T) * self.norm_cdf(-d2)
             
         return {"delta": delta, "gamma": gamma, "vega": vega, "vomma": vomma,"vanna": vanna, "theta": theta}
-
-
-
