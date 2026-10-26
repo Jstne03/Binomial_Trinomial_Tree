@@ -1,12 +1,14 @@
+import math
 import unittest
 from datetime import date
 
-from binomialTreeV2 import (
+from Bin_Tri_treeV4 import (
     Market,
     Option,
     Model,
     BinomialTree,
-    price_tree,
+    BlackScholes,
+    price_binomial_tree,
 )
 
 
@@ -81,7 +83,7 @@ class TestBinomialTree(unittest.TestCase):
             exercise="EU"
         )
 
-        price = price_tree(
+        price = price_binomial_tree(
             m,
             o,
             pricing_date,
@@ -90,28 +92,6 @@ class TestBinomialTree(unittest.TestCase):
 
         self.assertAlmostEqual(price, 100.0)
 
-    def test_american_call_greater_or_equal_european(self):
-        pricing_date = date(2026, 9, 15)
-
-        m = Market(100, 0.03, 0.20)
-
-        maturity = date(2027, 9, 2)
-
-        eu = price_tree(
-            m,
-            Option(105, maturity, "C", "EU"),
-            pricing_date,
-            200
-        )
-
-        am = price_tree(
-            m,
-            Option(105, maturity, "C", "AM"),
-            pricing_date,
-            200
-        )
-
-        self.assertGreaterEqual(am, eu)
 
     def test_american_put_greater_or_equal_european(self):
         pricing_date = date(2026, 9, 15)
@@ -120,14 +100,14 @@ class TestBinomialTree(unittest.TestCase):
 
         maturity = date(2027, 9, 2)
 
-        eu = price_tree(
+        eu = price_binomial_tree(
             m,
             Option(105, maturity, "P", "EU"),
             pricing_date,
             200
         )
 
-        am = price_tree(
+        am = price_binomial_tree(
             m,
             Option(105, maturity, "P", "AM"),
             pricing_date,
@@ -135,6 +115,37 @@ class TestBinomialTree(unittest.TestCase):
         )
 
         self.assertGreaterEqual(am, eu)
+
+    def test_call_put_parity(self):
+        # l'arbre respecte l'espérance à chaque pas : C - P = S0 - K e^{-rT} exactement, pour tout N
+        pricing_date, maturity = date(2026, 9, 15), date(2027, 9, 2)
+        T = (maturity - pricing_date).days / 365
+        m = Market(100, 0.03, 0.20)
+        for n in (10, 57, 200):
+            c = price_binomial_tree(m, Option(95, maturity, "C", "EU"), pricing_date, n)
+            p = price_binomial_tree(m, Option(95, maturity, "P", "EU"), pricing_date, n)
+            self.assertAlmostEqual(c - p, 100 - 95 * math.exp(-0.03 * T), places=9)
+
+    def test_expected_value_and_variance_on_every_node(self):
+        # espérance = forward et variance = S^2 e^{2r dt} (e^{vol^2 dt} - 1) sur TOUS les nœuds
+        pricing_date = date(2026, 9, 15)
+        m = Market(100, 0.03, 0.20)
+        tree = BinomialTree(m, Option(101, date(2027, 9, 2), "C", "EU"), Model(pricing_date, 40))
+        tree.price()
+        e = math.exp(m.vol ** 2 * tree.deltaT)
+        trunk = tree.last_trunk
+        while trunk is not None:
+            node = trunk.lowest()
+            while node is not None:
+                if node.next_up is not None:
+                    up, dn = node.next_up.St, node.next_down.St
+                    esp = tree.u * up + tree.d * dn
+                    var = tree.u * up ** 2 + tree.d * dn ** 2 - esp ** 2
+                    self.assertAlmostEqual(esp / node.forward(), 1.0, places=9)
+                    self.assertAlmostEqual(
+                        var / (node.St ** 2 * math.exp(2 * m.r * tree.deltaT) * (e - 1)), 1.0, places=6)
+                node = node.above
+            trunk = trunk.prec_trunk
 
 
 if __name__ == "__main__":

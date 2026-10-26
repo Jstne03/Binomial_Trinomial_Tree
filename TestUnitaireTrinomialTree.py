@@ -2,13 +2,13 @@ import unittest
 from datetime import date
 import math
 
-from Bin_Tri_treeV2 import (
+from Bin_Tri_treeV4 import (
     Market,
     Option,
     Model,
     TrinomialTree,
+    BlackScholes,
     price_trinomial_tree,
-    
 )
 
 # vérifier la variance
@@ -115,31 +115,6 @@ class TestTrinomialTree(unittest.TestCase):
         )
 
         self.assertGreaterEqual(am, eu)
-
-    def test_american_put_greater_or_equal_european(self):
-        #tout est dans le nom
-        pricing_date = date(2026, 9, 15)
-
-        m = Market(100, 0.03, 0.20)
-
-        maturity = date(2027, 9, 2)
-
-        eu = price_trinomial_tree(
-            m,
-            Option(105, maturity, "P", "EU"),
-            pricing_date,
-            200
-        )
-
-        am = price_trinomial_tree(
-            m,
-            Option(105, maturity, "P", "AM"),
-            pricing_date,
-            200
-        )
-
-        self.assertGreaterEqual(am, eu)
-        
         
 
     def test_div_column_moments(self):
@@ -171,18 +146,37 @@ class TestTrinomialTree(unittest.TestCase):
         V = (100 - frac * D) ** 2 * math.exp(2 * r * dt) * (tree.e - 1)
         self.assertAlmostEqual(var, V)
 
-    # def test_put_with_div_next_day_close_to_bs(self):
-    #     # put européen avec dividende le lendemain ≈ BS avec S0 - D
-    #     pricing_date = date(2026, 9, 15)
-    #     maturity = date(2027, 9, 2)
-    #     D = 4.0
-    #     m_div = Market(100, 0.03, 0.20, q_ex_div_date=date(2026, 9, 16), q_amount=D)
-    #     m_ref = Market(100 - D, 0.03, 0.20)
-    #     o = Option(101, maturity, "P", "EU")
+    def test_div_next_day_equals_adjusted_spot(self):
+        # dividende le lendemain du pricing <=> arbre sans dividende démarrant à S0 - D*exp(-r/365)
+        # (écart résiduel ~9e-4 : dividende cash contre spot ajusté, ce n'est pas une erreur)
+        pricing_date = date(2026, 9, 15)
+        maturity = date(2027, 9, 2)
+        D, r, vol = 4.0, 0.03, 0.20
 
-    #     tree_price = price_trinomial_tree(m_div, o, pricing_date, 300)
-    #     bs_price = BlackScholes(m_ref, o, pricing_date).price_option()
-    #     self.assertAlmostEqual(tree_price, bs_price, delta=0.05)
+        m_div = Market(100, r, vol, q_ex_div_date=date(2026, 9, 16), q_amount=D)
+        m_adj = Market(100 - D * math.exp(-r / 365), r, vol)
+
+        for cp in ("P", "C"):
+            o = Option(101, maturity, cp, "EU")
+            price_with_div = price_trinomial_tree(m_div, o, pricing_date, 500)
+            price_adjusted = price_trinomial_tree(m_adj, o, pricing_date, 500)
+            self.assertAlmostEqual(price_with_div, price_adjusted, delta=0.002)
+
+    def test_call_put_parity(self):
+        # C - P = e^{-rT} (F - K), F = S0 e^{rT} - D e^{r(T - t_ex)} ; exact pour tout N (EU)
+        pricing_date, maturity = date(2026, 9, 15), date(2027, 9, 2)
+        T = (maturity - pricing_date).days / 365
+        r, D, days = 0.03, 3.0, 120
+        no_div = Market(100, r, 0.20)
+        with_div = Market(100, r, 0.20, q_ex_div_date=date(2027, 1, 13), q_amount=D)   # 120 jours
+        forward = 100 * math.exp(r * T) - D * math.exp(r * (T - days / 365))
+        for n in (10, 57, 211):
+            c = price_trinomial_tree(no_div, Option(95, maturity, "C", "EU"), pricing_date, n)
+            p = price_trinomial_tree(no_div, Option(95, maturity, "P", "EU"), pricing_date, n)
+            self.assertAlmostEqual(c - p, 100 - 95 * math.exp(-r * T), places=9)
+            c = price_trinomial_tree(with_div, Option(95, maturity, "C", "EU"), pricing_date, n)
+            p = price_trinomial_tree(with_div, Option(95, maturity, "P", "EU"), pricing_date, n)
+            self.assertAlmostEqual(c - p, math.exp(-r * T) * (forward - 95), places=9)
 
 
 if __name__ == "__main__":
