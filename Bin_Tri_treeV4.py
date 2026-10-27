@@ -159,6 +159,10 @@ class TrunkTriNode(TriNode):
         self.prec_trunk = prec_trunk # lien arrière (pour le backward)
         self.column = column # numéro de la colonne (0 = racine)
 
+# Échelle des grecques en volatilité : résultats par point de vol (1 % = 0.01)
+VEGA_SCALE = 0.01       # dV/dσ     -> /100
+VANNA_SCALE = 0.01      # d²V/dSdσ  -> /100
+VOMMA_SCALE = 0.0001    # d²V/dσ²   -> /10 000
 
 #Black-Scholes pour un spot et une durée quelconques (sert au lissage de la dernière colonne)
 def black_scholes_price(S, K, r, v, T, CP):
@@ -620,9 +624,10 @@ def price_and_greeks(market, option, pricing_date, nb_step, tree_type="tri",
     h = vol_shift
     (p_up, d_up), (p_mid, _), (p_dn, d_dn) = (price_at_vol(market.vol + h), price_at_vol(market.vol),
                                               price_at_vol(market.vol - h))
-    vega = (p_up - p_dn) / (2 * h)
-    vomma = (p_up - 2 * p_mid + p_dn) / h ** 2
-    vanna = (d_up - d_dn) / (2 * h)       # vanna = d(delta)/d(vol), différence finie centrée
+    # dérivées par unité de vol, puis mises à l'échelle "par point de vol" (1 % = 0.01)
+    vega = (p_up - p_dn) / (2 * h) * VEGA_SCALE
+    vomma = (p_up - 2 * p_mid + p_dn) / h ** 2 * VOMMA_SCALE
+    vanna = (d_up - d_dn) / (2 * h) * VANNA_SCALE
 
     # theta : différence finie sur la date de pricing (1 jour), exprimé par an
     day = timedelta(days=1)
@@ -671,8 +676,9 @@ class BlackScholes():
         delta = self.norm_cdf(d1) if self.option.CP == "C" else self.norm_cdf(d1) - 1
         gamma = pdf / (S * v * math.sqrt(T))
         vega = S * pdf * math.sqrt(T)
-        vomma = vega * d1 * d2 / v
-        vanna = -pdf * d2 / v
+        vomma = vega * d1 * d2 / v * VOMMA_SCALE
+        vanna = -pdf * d2 / v * VANNA_SCALE
+        vega = vega * VEGA_SCALE
         
         decay = -S * pdf * v / (2 * math.sqrt(T))
         if self.option.CP == "C":
