@@ -1,5 +1,4 @@
 import xlwings as xw
-import os
 from datetime import datetime
 
 from Bin_Tri_treeV4 import (
@@ -31,19 +30,14 @@ def _flag(x):
 
 
 GREEK_KEYS = ["delta", "gamma", "vega", "vomma", "vanna", "theta"]   # ds même ordre que les libellés Excel
-GREEK_SCALE = {"vega": 0.01, "vanna": 0.01, "vomma": 0.0001}   # par point de vol
 
 def _greeks_column(g):
-    return [[g[k] * GREEK_SCALE.get(k, 1.0)] for k in GREEK_KEYS]
-
-#def _greeks_column(g):
     # liste de listes = écriture verticale (une cellule par grecque)
-    #return [[g[k]] for k in GREEK_KEYS]
+    return [[g[k]] for k in GREEK_KEYS]
 
 @xw.func
 def excel_pricer():
     wb = xw.Book.caller()
-    os.chdir(os.path.dirname(wb.fullname)) 
     ws = wb.sheets['Main']
 
     ##------- INPUT (on lit .value)
@@ -127,7 +121,6 @@ def excel_pricer():
 @xw.func
 def create_graphiques_arbres():
     wb = xw.Book.caller()
-    os.chdir(os.path.dirname(wb.fullname)) 
     ws = wb.sheets['Main']
 
     ##------- INPUT
@@ -157,7 +150,8 @@ def create_graphiques_arbres():
     market = Market(s0, r, sigma, ex_div_date, q_amount)
     option = Option(K, maturity, CP, exercise)
     has_div = bool(q_amount) and ex_div_date is not None
-
+    
+    bin_graph = "impossible (dividende)"
     try:
         if not has_div:
             bin_graph_class = BinomialGraphique(market, option, pricing_date,
@@ -177,15 +171,14 @@ def create_graphiques_arbres():
         return
 
     ##------- ÉCRITURE DANS EXCEL
-    visualisation_bin_cell.value = tri_graph
-    visualisation_trin_cell.value = bin_graph
+    visualisation_bin_cell.value = bin_graph
+    visualisation_trin_cell.value = tri_graph
 
 
 @xw.func
 def create_graphiques_convergence():
     #pour étudier la convergence vers B&S on ne veut pas de dividende ni les grecques
     wb = xw.Book.caller()
-    os.chdir(os.path.dirname(wb.fullname)) 
     ws = wb.sheets['Main']
 
     ##------- INPUT (on lit .value)

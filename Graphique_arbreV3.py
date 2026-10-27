@@ -65,20 +65,20 @@ class BinomialGraphique():
                 smoothing
             )
 
-            error = n * abs(price - price_bs)
+            error = n * (price - price_bs)
             errors.append(error)
 
         # Graphique
         plt.figure(figsize=(10, 6))
 
-        plt.plot(
+        plt.scatter(
             N_values,
             errors,
-            label=r"$N\,|V_N - V_{BS}|$"
+            label=r"$N\,(V_N - V_{BS})$"
         )
 
         plt.xlabel("Nombre de pas N")
-        plt.ylabel(r"$N\,|V_N - V_{BS}|$")
+        plt.ylabel(r"$N\,(V_N - V_{BS})$")
         plt.title("Convergence de l'arbre binomial vers Black-Scholes")
         plt.grid(True)
         plt.legend()
@@ -91,7 +91,7 @@ class BinomialGraphique():
         Créer une représentation SVG de l'arbre binomial.
         """
         model = Model(self.pricing_date,nb_pas)
-        tree = BinomialTree(self.market, self.option, model, self.prune_threshold, self.smoothing)
+        tree = BinomialTree(self.market, self.option, model, prune_threshold=self.prune_threshold, smoothing=self.smoothing)
         price = tree.price()
 
         # L'arbre doit avoir été calculé avant
@@ -303,20 +303,20 @@ class TrinomialGraphique():
         # Calcul de N * |V_trinomial - V_BS| (erreur en 1/N)
         for n in N_values:
             price = price_trinomial_tree(market, option, pricing_date, n, prune_threshold, smoothing)
-            error = n * abs(price - price_bs)
+            error = n * (price - price_bs)
             errors.append(error)
 
         # Graphique
         plt.figure(figsize=(10, 6))
 
-        plt.plot(
+        plt.scatter(
             N_values,
             errors,
-            label=r"$N\,|V_N - V_{BS}|$"
+            label=r"$N\,(V_N - V_{BS})$"
         )
 
         plt.xlabel("Nombre de pas N")
-        plt.ylabel(r"$N\,|V_N - V_{BS}|$")
+        plt.ylabel(r"$N\,(V_N - V_{BS})$")
         plt.title("Convergence de l'arbre trinomial vers Black-Scholes")
         plt.grid(True)
         plt.legend()
@@ -330,7 +330,7 @@ class TrinomialGraphique():
         """
 
         model = Model(self.pricing_date,nb_pas)
-        tree = TrinomialTree(self.market, self.option, model, self.prune_threshold, self.smoothing)
+        tree = TrinomialTree(self.market, self.option, model, prune_threshold=self.prune_threshold, smoothing=self.smoothing)
         price = tree.price()
         
         # L'arbre doit avoir été calculé avant
@@ -462,3 +462,5 @@ class TrinomialGraphique():
         dwg.save()
 
         return(f"Arbre trinomial sauvegardé dans : {filename}")
+    
+    
