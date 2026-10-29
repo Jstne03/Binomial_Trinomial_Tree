@@ -1,5 +1,7 @@
 import xlwings as xw
-from datetime import datetime
+from datetime import date, datetime
+from typing import Any, Dict, List
+from dataclasses import dataclass
 
 from Bin_Tri_treeV4 import (
     Market,
@@ -11,231 +13,209 @@ from Bin_Tri_treeV4 import (
     price_and_greeks,
 )
 
-from Graphique_arbreV3 import(
-    BinomialGraphique,
-    TrinomialGraphique
+from tree_svg_viewer import (
+    binomial_tree_to_svg,
+    trinomial_tree_to_svg,
+    SvgStyle
     )
 
-#----------------------- PRICER DES OPTIONS ----------------------------------
-def _to_date(x):
+from Convergence_BS_graphique import ConvergenceBS
+
+@dataclass(frozen=True)
+class CommonInputs:
+    """Entrées Excel communes aux trois fonctions."""
+    market: Market
+    option: Option
+    pricing_date: date
+    prune: float
+    smoothing: bool
+    has_div: bool
+
+def _val(ws: xw.Sheet, name: str) -> Any:
+    #Lit la valeur de la plage nommée 'name'
+    return ws.range(name).value
+
+def _read_market(ws: xw.Sheet) -> Market:
+    #Construit le Market à partir des cellules Excel
+    return Market(
+        _val(ws, "Stock_price"),
+        _val(ws, "Interest_rate"),
+        _val(ws, "Volatility"),
+        _to_date(_val(ws, "Ex_dividend_date")),
+        _val(ws, "Div_amount"),
+    )
+
+def _read_option(ws: xw.Sheet) -> Option:
+    #Construit l'Option à partir des cellules Excel
+    return Option(
+        _val(ws, "Strike"),
+        _to_date(_val(ws, "Maturity")),
+        str(_val(ws, "CP")).strip().upper(),
+        str(_val(ws, "Exercise")).strip().upper(),
+    )
+
+def read_inputs(ws: xw.Sheet) -> CommonInputs:
+    #Lit toutes les entrées communes de la feuille
+    has_div = (
+        bool(_val(ws, "Div_amount"))
+        and _to_date(_val(ws, "Ex_dividend_date")) is not None
+    )
+    return CommonInputs(
+        market=_read_market(ws),
+        option=_read_option(ws),
+        pricing_date=_to_date(_val(ws, "Pricing_date")),
+        prune=_val(ws, "Pruning") or None,
+        smoothing=_flag(_val(ws, "Limites")),
+        has_div=has_div,
+    )
+
+def get_sheet(name: str = "Main") -> xw.Sheet:
+    #Retourne la feuille `name` du classeur excel
+    wb: xw.Book = xw.Book.caller()
+    return wb.sheets[name]
+
+def _to_date(x: Any) -> date:
     # Excel renvoie un datetime (ou None si la cellule est vide)
     if x is None:
         return None
     return x.date() if isinstance(x, datetime) else x
 
-
-def _flag(x):
+def _flag(x : Any) -> bool:
     # accepte TRUE/FALSE, 1/0, "oui"/"non"...
     return x is True or str(x).strip().lower() in ("1", "oui", "yes", "true", "vrai", "x")
 
-
 GREEK_KEYS = ["delta", "gamma", "vega", "vomma", "vanna", "theta"]   # ds même ordre que les libellés Excel
 
-def _greeks_column(g):
+def _greeks_column(g : Dict[str, float]) -> List[List[float]]:
     # liste de listes = écriture verticale (une cellule par grecque)
     return [[g[k]] for k in GREEK_KEYS]
 
+OUTPUT_NAMES = {
+    "bs_price": "BS_price",
+    "bin_price": "Bin_tree_price",
+    "tri_price": "Trin_Tree_price",
+    "nb_nodes": "Nb_nodes",
+    "bs_greeks": "BS_grecques",
+    "bin_greeks": "Bin_tree_grecques",
+    "tri_greeks": "Trin_tree_grecques",
+}
+
+def _output_cells(ws: xw.Sheet) -> Dict[str, xw.Range]:
+    """Retourne les cellules de sortie indexées par clé."""
+    return {key: ws.range(name) for key, name in OUTPUT_NAMES.items()}
+
+#----------------------- PRICER DES OPTIONS ----------------------------------
 @xw.func
-def excel_pricer():
-    wb = xw.Book.caller()
-    ws = wb.sheets['Main']
-
-    ##------- INPUT (on lit .value)
-    s0 = ws.range('Stock_price').value
-    r = ws.range('Interest_rate').value
-    sigma = ws.range('Volatility').value
-    ex_div_date = _to_date(ws.range('Ex_dividend_date').value)
-    q_amount = ws.range('Div_amount').value
-
-    pricing_date = _to_date(ws.range('Pricing_date').value)
-    nb_step = int(ws.range('Nb_steps').value)
-
-    prune = ws.range('Pruning').value or None
-    smoothing = _flag(ws.range('Limites').value)
-    want_greeks = _flag(ws.range('Grecques').value)
-
-    maturity = _to_date(ws.range('Maturity').value)
-    CP = str(ws.range('CP').value).strip().upper()
-    exercise = str(ws.range('Exercise').value).strip().upper()
-    K = ws.range('Strike').value
-
+def excel_pricer() -> None:
+    ws = get_sheet()
+    ##------- INPUT
+    inp = read_inputs(ws)
+    nb_step = int(_val(ws, "Nb_steps"))
+    want_greeks = _flag(_val(ws, "Grecques"))
+    model = Model(inp.pricing_date, nb_step)
     ##------- OUTPUT (cellules, on les écrira à la fin)
-    bs_price_cell = ws.range('BS_price')
-    bin_price_cell = ws.range('Bin_tree_price')
-    tri_price_cell = ws.range('Trin_Tree_price')
-    nb_nodes_cell = ws.range('Nb_nodes')
-    bs_greeks_cell = ws.range('BS_grecques')
-    bin_greeks_cell = ws.range('Bin_tree_grecques')
-    tri_greeks_cell = ws.range('Trin_tree_grecques')
-
-    ##------- COMPUTATION
-    market = Market(s0, r, sigma, ex_div_date, q_amount)
-    option = Option(K, maturity, CP, exercise)
-    model = Model(pricing_date, nb_step)
-    has_div = bool(q_amount) and ex_div_date is not None
+    out = _output_cells(ws)
 
     try:
         # trinomial
-        tri_tree = TrinomialTree(market, option, model,
-                                 prune_threshold=prune, smoothing=smoothing)
+        tri_tree = TrinomialTree(inp.market, inp.option, model,prune_threshold=inp.prune, smoothing=inp.smoothing)
         tri_price = tri_tree.price()
-        nb_nodes = tri_tree.count_nodes()
+        out["nb_nodes"].value = tri_tree.count_nodes()
         tri_greeks = None
         if want_greeks:
-            tri_greeks = price_and_greeks(market, option, pricing_date, nb_step,
-                                          tree_type="tri", prune_threshold=prune,
-                                          smoothing=smoothing)
+            tri_greeks = price_and_greeks(inp.market, inp.option, inp.pricing_date, nb_step,
+                                          tree_type="tri", prune_threshold=inp.prune,smoothing=inp.smoothing)
 
         # binomial : on ne le calcule pas s'il y a un dividende
         bin_price, bin_greeks = "impossible (dividende)", None
-        if not has_div:
-            bin_price = BinomialTree(market, option, model,
-                                     prune_threshold=prune,
-                                     smoothing=smoothing).price()
+        if not inp.has_div:
+            bin_price = BinomialTree(inp.market, inp.option, model,prune_threshold=inp.prune,smoothing=inp.smoothing).price()
             if want_greeks:
-                bin_greeks = price_and_greeks(market, option, pricing_date, nb_step,
-                                              tree_type="bin", prune_threshold=prune,
-                                              smoothing=smoothing)
+                bin_greeks = price_and_greeks(inp.market, inp.option, inp.pricing_date, nb_step,
+                                              tree_type="bin", prune_threshold=inp.prune,smoothing=inp.smoothing)
 
         # Black-Scholes (sans dividende)
-        bs = BlackScholes(market, option, pricing_date)
+        bs = BlackScholes(inp.market, inp.option, inp.pricing_date)
         bs_price = bs.price_option()
         bs_greeks = bs.greeks() if want_greeks else None
 
     except ValueError as e:
-        tri_price_cell.value = f"Erreur : {e}"
+        out["tri_price"].value = f"Erreur : {e}"
         return
 
-    ##------- ÉCRITURE DANS EXCEL
-    bs_price_cell.value = bs_price
-    tri_price_cell.value = tri_price
-    bin_price_cell.value = bin_price
-    nb_nodes_cell.value = nb_nodes
-
     # None vide les cellules (grecques non demandées, ou binomial impossible)
-    bs_greeks_cell.value = _greeks_column(bs_greeks) if bs_greeks else None
-    tri_greeks_cell.value = _greeks_column(tri_greeks) if tri_greeks else None
-    bin_greeks_cell.value = _greeks_column(bin_greeks) if bin_greeks else None
+    out["bs_price"].value = bs_price
+    out["bin_price"].value = bin_price
+    out["tri_price"].value = tri_price
+    out["bs_greeks"].value = _greeks_column(bs_greeks) if bs_greeks else None
+    out["bin_greeks"].value = _greeks_column(bin_greeks) if bin_greeks else None
+    out["tri_greeks"].value = _greeks_column(tri_greeks) if tri_greeks else None
     
 #----------------------- CREATION DES GRAPHIQUES -----------------------------    
 @xw.func
-def create_graphiques_arbres():
-    wb = xw.Book.caller()
-    ws = wb.sheets['Main']
+def create_graphiques_arbres() -> None:
+    ws = get_sheet()
 
     ##------- INPUT
-    s0 = ws.range('Stock_price').value
-    r = ws.range('Interest_rate').value
-    sigma = ws.range('Volatility').value
-    ex_div_date = _to_date(ws.range('Ex_dividend_date').value)
-    q_amount = ws.range('Div_amount').value
-
-    pricing_date = _to_date(ws.range('Pricing_date').value)
-    nb_step = int(ws.range('Nb_steps').value)
-
-    prune = ws.range('Pruning').value or None
-    smoothing = _flag(ws.range('Limites').value)
-    #want_greeks = _flag(ws.range('Grecques').value)
-
-    maturity = _to_date(ws.range('Maturity').value)
-    CP = str(ws.range('CP').value).strip().upper()
-    exercise = str(ws.range('Exercise').value).strip().upper()
-    K = ws.range('Strike').value
+    ws = get_sheet()
+    inp = read_inputs(ws)
+    model = Model(inp.pricing_date, int(_val(ws, "Nb_steps")))
 
     ##------- OUTPUT (cellules, on les écrira à la fin)
     visualisation_bin_cell = ws.range('Visualisation_bin')
     visualisation_trin_cell = ws.range('Visualisation_trin')
-
-    ##------- COMPUTATION
-    market = Market(s0, r, sigma, ex_div_date, q_amount)
-    option = Option(K, maturity, CP, exercise)
-    has_div = bool(q_amount) and ex_div_date is not None
     
     bin_graph = "impossible (dividende)"
     try:
-        if not has_div:
-            bin_graph_class = BinomialGraphique(market, option, pricing_date,
-                                     prune_threshold=prune, smoothing=smoothing)
-            
-            bin_graph = bin_graph_class.to_svg(nb_step)
+        if not inp.has_div:
+            bin_tree = BinomialTree(inp.market, inp.option, model,prune_threshold=inp.prune, smoothing=inp.smoothing)
+            bin_tree.price()
+            bin_graph = binomial_tree_to_svg(bin_tree, "binomial_tree_visualisation.svg", SvgStyle(log_scale=True))
             
         # trinomial
-        tri_graph_class = TrinomialGraphique(market, option, pricing_date,
-                                 prune_threshold=prune, smoothing=smoothing)
-        
-        #graphique de convergence vers BS
-        tri_graph = tri_graph_class.to_svg(nb_step)
+        trin_tree = TrinomialTree(inp.market, inp.option, model,prune_threshold=inp.prune, smoothing=inp.smoothing)
+        trin_tree.price()
+        tri_graph = trinomial_tree_to_svg(trin_tree, "trinomial_tree_visualisation.svg", SvgStyle(log_scale=True))
 
     except ValueError as e:
         visualisation_bin_cell.value = f"Erreur : {e}"
         return
 
-    ##------- ÉCRITURE DANS EXCEL
     visualisation_bin_cell.value = bin_graph
     visualisation_trin_cell.value = tri_graph
 
-
 @xw.func
-def create_graphiques_convergence():
+def create_graphiques_convergence() -> None:
     #pour étudier la convergence vers B&S on ne veut pas de dividende ni les grecques
-    wb = xw.Book.caller()
-    ws = wb.sheets['Main']
+    ws = get_sheet()
 
-    ##------- INPUT (on lit .value)
-    s0 = ws.range('Stock_price').value
-    r = ws.range('Interest_rate').value
-    sigma = ws.range('Volatility').value
-    ex_div_date = _to_date(ws.range('Ex_dividend_date').value)
-    q_amount = ws.range('Div_amount').value
-
-    pricing_date = _to_date(ws.range('Pricing_date').value)
-    nb_step = int(ws.range('Nb_steps').value)
-    
-    #pour l'étude de la CV, cb de pas max pour les créations d'arbre :
-    max_nb_pas = int(ws.range('CV_max_nb_pas').value)
-    
-
-    prune = ws.range('Pruning').value or None
-    smoothing = _flag(ws.range('Limites').value)
-
-    maturity = _to_date(ws.range('Maturity').value)
-    CP = str(ws.range('CP').value).strip().upper()
-    exercise = str(ws.range('Exercise').value).strip().upper()
-    K = ws.range('Strike').value
+    ##------- INPUT
+    ws = get_sheet()
+    inp = read_inputs(ws)
+    max_nb_pas = int(_val(ws, "CV_max_nb_pas"))
 
     ##------- OUTPUT (cellules, on les écrira à la fin)
     CV_BS_bin_cell = ws.range('CV_BS_bin')
     CV_BS_trin_cell = ws.range('CV_BS_trin')
 
-    ##------- COMPUTATION
-    market = Market(s0, r, sigma, ex_div_date, q_amount)
-    option = Option(K, maturity, CP, exercise)
-    model = Model(pricing_date, nb_step)
-    has_div = bool(q_amount) and ex_div_date is not None
-
     try:
         # trinomial
-        tri_graph_class = TrinomialGraphique(market, option, pricing_date,
-                                 prune_threshold=prune, smoothing=smoothing)
-        
-        #graphique de convergence vers BS
+        tri_graph_class = ConvergenceBS(inp.market, inp.option, inp.pricing_date,'trinomial',
+                                 prune_threshold=inp.prune, smoothing=inp.smoothing)
+ 
         tri_graph = tri_graph_class.convergence_black_scholes(max_nb_pas)
 
         #binomial
         bin_graph = None
-        if not has_div:
-            bin_graph_class = BinomialGraphique(market, option, pricing_date,prune_threshold=prune,
-                                    smoothing=smoothing)
+        if not inp.has_div:
+            bin_graph_class = ConvergenceBS(inp.market, inp.option, inp.pricing_date,'binomial',
+                                     prune_threshold=inp.prune, smoothing=inp.smoothing)
             
-            #graphique de convergence vers BS
             bin_graph = bin_graph_class.convergence_black_scholes(max_nb_pas)
 
     except ValueError as e:
         CV_BS_bin_cell.value = f"Erreur : {e}"
         return
 
-    ##------- ÉCRITURE DANS EXCEL
     CV_BS_bin_cell.value = bin_graph
     CV_BS_trin_cell.value = tri_graph
-
-
