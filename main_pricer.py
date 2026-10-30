@@ -3,7 +3,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List
 from dataclasses import dataclass
 
-from Bin_Tri_treeV4 import (
+from Bin_Tri_treeV5 import (
     Market,
     Option,
     Model,
@@ -21,6 +21,25 @@ from tree_svg_viewer import (
 
 from Convergence_BS_graphique import ConvergenceBS
 
+def get_sheet(name: str = "Main") -> xw.Sheet:
+    #Retourne la feuille `name` du classeur excel
+    wb: xw.Book = xw.Book.caller()
+    return wb.sheets[name]
+
+def _to_date(x: Any) -> date:
+    # Excel renvoie un datetime (ou None si la cellule est vide)
+    if x is None:
+        return None
+    return x.date() if isinstance(x, datetime) else x
+
+def _flag(x : Any) -> bool:
+    # accepte TRUE/FALSE, 1/0, "oui"/"non"...
+    return x is True or str(x).strip().lower() in ("1", "oui", "yes", "true", "vrai", "x")
+
+def _val(ws: xw.Sheet, name: str) -> Any:
+    #Lit la valeur de la plage nommée 'name'
+    return ws.range(name).value
+
 @dataclass(frozen=True)
 class CommonInputs:
     """Entrées Excel communes aux trois fonctions."""
@@ -30,10 +49,6 @@ class CommonInputs:
     prune: float
     smoothing: bool
     has_div: bool
-
-def _val(ws: xw.Sheet, name: str) -> Any:
-    #Lit la valeur de la plage nommée 'name'
-    return ws.range(name).value
 
 def _read_market(ws: xw.Sheet) -> Market:
     #Construit le Market à partir des cellules Excel
@@ -52,6 +67,9 @@ def _read_option(ws: xw.Sheet) -> Option:
         _to_date(_val(ws, "Maturity")),
         str(_val(ws, "CP")).strip().upper(),
         str(_val(ws, "Exercise")).strip().upper(),
+        _flag(_val(ws, "Digital")),
+        _val(ws, "Payout") or 1, #pour éviter les erreurs si la cellule est vide
+        
     )
 
 def read_inputs(ws: xw.Sheet) -> CommonInputs:
@@ -69,20 +87,6 @@ def read_inputs(ws: xw.Sheet) -> CommonInputs:
         has_div=has_div,
     )
 
-def get_sheet(name: str = "Main") -> xw.Sheet:
-    #Retourne la feuille `name` du classeur excel
-    wb: xw.Book = xw.Book.caller()
-    return wb.sheets[name]
-
-def _to_date(x: Any) -> date:
-    # Excel renvoie un datetime (ou None si la cellule est vide)
-    if x is None:
-        return None
-    return x.date() if isinstance(x, datetime) else x
-
-def _flag(x : Any) -> bool:
-    # accepte TRUE/FALSE, 1/0, "oui"/"non"...
-    return x is True or str(x).strip().lower() in ("1", "oui", "yes", "true", "vrai", "x")
 
 GREEK_KEYS = ["delta", "gamma", "vega", "vomma", "vanna", "theta"]   # ds même ordre que les libellés Excel
 
