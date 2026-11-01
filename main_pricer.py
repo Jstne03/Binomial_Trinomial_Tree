@@ -1,3 +1,5 @@
+import os
+import numpy as np
 import xlwings as xw
 from datetime import date, datetime
 from typing import Any, Dict, List
@@ -20,11 +22,22 @@ from tree_svg_viewer import (
     )
 
 from Convergence_BS_graphique import ConvergenceBS
+from graphiques import temps_calcul_bin_tri, erreur_vs_strike
 
 def get_sheet(name: str = "Main") -> xw.Sheet:
     #Retourne la feuille `name` du classeur excel
     wb: xw.Book = xw.Book.caller()
     return wb.sheets[name]
+
+def _output_path(filename: str) -> str:
+    #Chemin complet d'un fichier de sortie, dans le dossier du classeur pricer.xlsm
+    try:
+        folder = os.path.dirname(xw.Book.caller().fullname)
+        if not os.path.isdir(folder):      # classeur sur OneDrive/SharePoint : fullname est une URL
+            raise OSError
+    except Exception:
+        folder = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(folder, filename)
 
 def _to_date(x: Any) -> date:
     # Excel renvoie un datetime (ou None si la cellule est vide)
@@ -174,12 +187,14 @@ def create_graphiques_arbres() -> None:
         if not inp.has_div:
             bin_tree = BinomialTree(inp.market, inp.option, model,prune_threshold=inp.prune, smoothing=inp.smoothing)
             bin_tree.price()
-            bin_graph = binomial_tree_to_svg(bin_tree, "binomial_tree_visualisation.svg", SvgStyle(log_scale=True))
+            bin_graph = binomial_tree_to_svg(bin_tree, _output_path("binomial_tree_visualisation.svg"), 
+                                             SvgStyle(log_scale=True))
             
         # trinomial
         trin_tree = TrinomialTree(inp.market, inp.option, model,prune_threshold=inp.prune, smoothing=inp.smoothing)
         trin_tree.price()
-        tri_graph = trinomial_tree_to_svg(trin_tree, "trinomial_tree_visualisation.svg", SvgStyle(log_scale=True))
+        tri_graph = trinomial_tree_to_svg(trin_tree, _output_path("trinomial_tree_visualisation.svg"), 
+                                          SvgStyle(log_scale=True))
 
     except ValueError as e:
         visualisation_bin_cell.value = f"Erreur : {e}"
@@ -201,21 +216,30 @@ def create_graphiques_convergence() -> None:
     ##------- OUTPUT (cellules, on les écrira à la fin)
     CV_BS_bin_cell = ws.range('CV_BS_bin')
     CV_BS_trin_cell = ws.range('CV_BS_trin')
+    CV_BS_ordre_cell = ws.range('CV_BS_ordre')
 
     try:
         # trinomial
         tri_graph_class = ConvergenceBS(inp.market, inp.option, inp.pricing_date,'trinomial',
                                  prune_threshold=inp.prune, smoothing=inp.smoothing)
  
-        tri_graph = tri_graph_class.convergence_black_scholes(max_nb_pas)
+        tri_graph = tri_graph_class.convergence_black_scholes(max_nb_pas, _output_path("CV_BS_trinomial.png"))
 
         #binomial
         bin_graph = None
+        ordre_graph = None
         if not inp.has_div:
             bin_graph_class = ConvergenceBS(inp.market, inp.option, inp.pricing_date,'binomial',
                                      prune_threshold=inp.prune, smoothing=inp.smoothing)
             
-            bin_graph = bin_graph_class.convergence_black_scholes(max_nb_pas)
+            bin_graph = bin_graph_class.convergence_black_scholes(max_nb_pas, _output_path("CV_BS_binomial.png"))
+
+            #étude de l'ordre de convergence (binomial uniquement et on force le lissage)
+            ordre_graph = ConvergenceBS.etude_ordre_convergence(inp.market, inp.option, inp.pricing_date,
+                         nb_pas_list=tuple(range(10, max_nb_pas + 1, 10)),
+                         prune_threshold=inp.prune,
+                         smoothing=True,
+                         filename=_output_path("ordre_convergence_bin.png"))
 
     except ValueError as e:
         CV_BS_bin_cell.value = f"Erreur : {e}"
@@ -223,3 +247,43 @@ def create_graphiques_convergence() -> None:
 
     CV_BS_bin_cell.value = bin_graph
     CV_BS_trin_cell.value = tri_graph
+    CV_BS_ordre_cell.value = ordre_graph
+
+@xw.func
+def create_graphiques() -> None:
+    #étude graphique : temps de calcul (avec/sans pruning) et erreur en fonction du strike
+    #pas de dividende (référence Black-Scholes)
+    ws = get_sheet()
+
+    ##------- INPUT
+    ws = get_sheet()
+    inp = read_inputs(ws)
+    max_nb_pas = int(_val(ws, "CV_max_nb_pas"))
+    #nombres de pas des temps de calcul : de 5 % à 100 % de CV_max_nb_pas
+    nb_pas_temps = tuple(sorted({max(10, round(max_nb_pas * f)) for f in (0.05, 0.1, 0.2, 0.4, 0.7, 1)}))
+
+    ##------- OUTPUT (cellules, on les écrira à la fin)
+    graph_bin_cell = ws.range('graph_bin_cell')     #temps de calcul
+    graph_trin_cell = ws.range('graph_trin_cell')   #erreur vs strike
+
+    bin_graph = tri_graph = "impossible (dividende)"
+    try:
+        if not inp.has_div:
+            #temps de calcul binomial et trinomial, avec et sans pruning
+            bin_graph = temps_calcul_bin_tri(inp.market, inp.option, inp.pricing_date,
+                                    nb_pas_list=nb_pas_temps,
+                                    prune_threshold=inp.prune or 1e-7, smoothing=inp.smoothing,
+                                    filename=_output_path("temps_calcul_bin_tri.png"))
+
+            #erreur de l'arbre en fonction du strike
+            tri_graph = erreur_vs_strike(inp.market, inp.option, inp.pricing_date, nb_pas=max_nb_pas,
+                                    strikes=np.linspace(0.9 * inp.market.s0, 1.1 * inp.market.s0, 101),
+                                    prune_threshold=inp.prune,
+                                    filename=_output_path("erreur_vs_strike_bin_tri.png"))
+
+    except ValueError as e:
+        graph_bin_cell.value = f"Erreur : {e}"
+        return
+
+    graph_bin_cell.value = bin_graph
+    graph_trin_cell.value = tri_graph
